@@ -1,5 +1,7 @@
 # capslight for WorkBuddy
 
+**English** | [简体中文](README.zh-CN.md)
+
 The green LED on your Caps Lock key as a live status indicator for WorkBuddy.
 
 It blinks while WorkBuddy is working, goes solid when the turn is done, and blinks fast
