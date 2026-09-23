@@ -1,26 +1,53 @@
 #!/usr/bin/env python3
-"""Add the capslight command hooks to ~/.claude/settings.json, leaving existing hooks alone."""
+"""Add the capslight command hooks to ~/.workbuddy/settings.json, leaving existing hooks alone."""
 import json
 import os
 import shutil
 import sys
 import tempfile
 
-SETTINGS = os.path.expanduser("~/.claude/settings.json")
+# WorkBuddy reads its user settings from <config dir>/settings.json, and honours
+# WORKBUDDY_CONFIG_DIR — the agent runtime does, so the installer must too.
+CONFIG_DIR = os.environ.get("WORKBUDDY_CONFIG_DIR") or os.path.expanduser("~/.workbuddy")
+SETTINGS = os.path.join(CONFIG_DIR, "settings.json")
 BACKUP = SETTINGS + ".bak-capslight"
-CMD = os.path.expanduser("~/.claude/bin/caps-indicator")
+CMD = os.path.join(CONFIG_DIR, "bin", "caps-indicator")
 MARKER = "caps-indicator"
 
 MAPPING = {
+    # --- the agent is mid-turn ------------------------------------------------
     "UserPromptSubmit": "working",
     "PreToolUse": "working",
     "PostToolUse": "working",
+    # A failed tool call does not end the turn. Without this the LED would be left showing
+    # whatever it showed before, and a long run of failures would look like a stall.
+    "PostToolUseFailure": "working",
+    # Subagents and teammates run inside the same turn as the main agent.
+    "SubagentStart": "working",
+    "SubagentStop": "working",
+    # Compaction happens between tool calls, with the turn still running.
+    "PreCompact": "working",
+    "PostCompact": "working",
+    # You denied a prompt: the agent carries on with what it already has.
+    "PermissionDenied": "working",
+    # You answered the agent's question: back to work.
+    "ElicitationResult": "working",
+
+    # --- it needs you ---------------------------------------------------------
     "PermissionRequest": "waiting",
-    # Notification covers both permission prompts and the idle "waiting for your input"
-    # that arrives right after Stop, so it is routed through a message-aware handler.
+    "Elicitation": "waiting",
+
+    # WorkBuddy uses Notification for two unrelated things — a real permission prompt and
+    # the idle "waiting for your input" that arrives right after Stop — so it is routed
+    # through the notification_type-aware handler in caps-indicator.
     "Notification": "notify",
+
+    # --- the turn is over -----------------------------------------------------
     "Stop": "done",
+    # The turn ended badly. Still finished, and the LED must not keep blinking.
     "StopFailure": "done",
+
+    # --- the conversation closed ---------------------------------------------
     "SessionEnd": "off",
 }
 
@@ -96,5 +123,6 @@ for event, state in MAPPING.items():
 
 save_settings(settings)
 
-print("added:  ", ", ".join(added) or "-")
-print("updated:", ", ".join(refreshed) or "-")
+print("settings:", SETTINGS)
+print("added:   ", ", ".join(added) or "-")
+print("updated: ", ", ".join(refreshed) or "-")

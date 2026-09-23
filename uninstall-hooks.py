@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Strip the capslight command hooks from ~/.claude/settings.json, keeping every other hook."""
+"""Strip the capslight command hooks from ~/.workbuddy/settings.json, keeping every other hook."""
 import json
 import os
 import sys
 import tempfile
 
-SETTINGS = os.path.expanduser("~/.claude/settings.json")
+CONFIG_DIR = os.environ.get("WORKBUDDY_CONFIG_DIR") or os.path.expanduser("~/.workbuddy")
+SETTINGS = os.path.join(CONFIG_DIR, "settings.json")
 MARKER = "caps-indicator"
 
 if not os.path.exists(SETTINGS):
@@ -24,8 +25,8 @@ except json.JSONDecodeError as e:
     )
     sys.exit(1)
 
-removed = []
-for event, entries in settings.get("hooks", {}).items():
+removed, emptied = [], []
+for event, entries in list(settings.get("hooks", {}).items()):
     if not isinstance(entries, list):
         continue
     before = len(entries)
@@ -35,6 +36,15 @@ for event, entries in settings.get("hooks", {}).items():
     ]
     if len(entries) != before:
         removed.append(event)
+        # Don't leave a trail of empty event arrays behind: after our entries are gone an
+        # empty list means "nothing was ever wired here", so drop the key entirely.
+        if not entries:
+            del settings["hooks"][event]
+            emptied.append(event)
+
+# If we emptied the whole thing, drop "hooks" too rather than leaving a bare {}.
+if settings.get("hooks") == {}:
+    del settings["hooks"]
 
 # same atomic write as install-hooks.py
 directory = os.path.dirname(SETTINGS)
@@ -50,3 +60,5 @@ except BaseException:
     raise
 
 print("removed from:", ", ".join(removed) or "-")
+if emptied:
+    print("dropped empty keys:", ", ".join(emptied))

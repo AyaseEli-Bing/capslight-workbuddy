@@ -1,19 +1,20 @@
 #!/bin/bash
-# caps-indicator — Claude Code status states on the Caps Lock LED.
+# caps-indicator — WorkBuddy status states on the Caps Lock LED.
 #
-#   caps-indicator working   slow blink (Claude is thinking / running tools)
+#   caps-indicator working   slow blink (WorkBuddy is thinking / running tools)
 #   caps-indicator waiting   fast blink (it needs you: permission prompt, question)
-#   caps-indicator done      solid on (task finished)
-#   caps-indicator notify    for the Notification hook — picks waiting or done by reading
-#                            the message, since Notification covers both cases
-#   caps-indicator off       dark (session closed)
+#   caps-indicator done      solid on (turn finished)
+#   caps-indicator notify    for the Notification hook — WorkBuddy uses Notification for
+#                            both "it needs you" and "the turn is over", so the state is
+#                            resolved from the payload's notification_type
+#   caps-indicator off       dark (conversation closed)
 #   caps-indicator reset     kill everything and turn the LED off
 #
 #   caps-indicator disable   mute the indicator (hooks stay wired, they just do nothing)
 #   caps-indicator enable    unmute it
 #   caps-indicator status    report muted/active and the current state
 #
-# Called from Claude Code hooks. Concurrent sessions are handled: each session's state
+# Called from WorkBuddy hooks. Concurrent conversations are handled: each session's state
 # is tracked separately and the highest-priority one wins the LED
 # (waiting > working > done > off).
 #
@@ -25,7 +26,10 @@ set -u
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAPSLED="$SELF_DIR/capsled"
 
-STATE_DIR="${CAPS_INDICATOR_HOME:-$HOME/.claude/capsled}"
+# WorkBuddy keeps its config under ~/.workbuddy. WORKBUDDY_CONFIG_DIR moves the whole
+# tree, and the agent runtime honours it — so the state has to follow it too.
+WORKBUDDY_DIR="${WORKBUDDY_CONFIG_DIR:-$HOME/.workbuddy}"
+STATE_DIR="${CAPS_INDICATOR_HOME:-$WORKBUDDY_DIR/capsled}"
 SESS_DIR="$STATE_DIR/sessions"
 PIDFILE="$STATE_DIR/blink.pid"
 CURFILE="$STATE_DIR/current"
@@ -184,16 +188,20 @@ fi
 
 # --- read the hook payload ---------------------------------------------------
 
-# Read stdin line by line with a timeout. Claude Code writes the hook JSON and closes the
-# pipe, so this finishes immediately in practice — but when the script inherits a pipe
-# nobody ever closes (a wrapper script, cron, launchd), a plain `cat` would hang forever.
-# `read -t` takes whole seconds only on the bash 3.2 that ships with macOS.
+# WorkBuddy writes the hook JSON to stdin and closes the pipe, **with no trailing
+# newline**. A `while IFS= read -r line` loop therefore throws the whole payload away on
+# the bash 3.2 that ships with macOS: the final unterminated line is read into the
+# variable but the loop condition fails, so nothing gets appended.
+#
+# `read -d ''` reads the entire payload in one call. It still returns non-zero on the
+# unterminated final line, hence the `|| true`.
+#
+# The timeout is for the case where the script inherits a pipe nobody ever closes (a
+# wrapper script, cron, launchd) — a plain `cat` would hang there forever.
 payload=""
 session_id=""
 if [ ! -t 0 ]; then
-  while IFS= read -r -t 1 line; do
-    payload="$payload$line"
-  done
+  IFS= read -r -t 1 -d '' payload || true
   session_id="$(printf '%s' "$payload" \
     | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     | head -1)"
@@ -209,21 +217,55 @@ if [ -n "${CAPSLIGHT_DEBUG:-}" ] || [ -f "$STATE_DIR/debug" ]; then
     "$(date '+%H:%M:%S')" "$want" "${event:-?}" "$payload" >> "$STATE_DIR/debug.log" 2>/dev/null
 fi
 
-# Notification fires for two very different things: an actual permission prompt, and the
-# idle "Claude is waiting for your input" that lands right after Stop. Only the first one
-# deserves the attention blink — the second must not overwrite the solid "done" light.
+# WorkBuddy fires Notification for several unrelated things, and unlike the agents this
+# was originally written for, the payload says which one it is:
 #
-# This keys off hook_event_name rather than the argument, so it holds however the hook was
-# wired up — including installs still mapping Notification straight to `waiting`.
+#   permission_prompt, elicitation_dialog, agent_needs_input  → it needs you
+#   idle_prompt, agent_completed                              → the turn is over
+#
+# The idle one lands immediately after Stop. Treating it as "needs you" made the LED
+# start blinking fast every time a task finished and the agent went quiet — which is the
+# exact bug that made this branch necessary. Only the first group deserves the attention
+# blink.
+#
+# Keyed off hook_event_name rather than the argument, so it holds however the hook was
+# wired up — including installs that map Notification straight to `waiting`.
 if [ "$want" = "notify" ] || [ "$event" = "Notification" ]; then
-  message="$(printf '%s' "$payload" \
-    | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  ntype="$(printf '%s' "$payload" \
+    | sed -n 's/.*"notification_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     | head -1)"
-  case "$message" in
-    *permission*|*Permission*|*approve*|*Approve*|*allow*|*Allow*) want="waiting" ;;
-    *) want="done" ;;
+  case "$ntype" in
+    permission_prompt|elicitation_dialog|agent_needs_input)
+      want="waiting" ;;
+    idle_prompt|agent_completed)
+      want="done" ;;
+    "")
+      # No notification_type at all — an older build, or a different agent writing the
+      # same hook. Fall back to reading the free-text message.
+      #
+      # Keep this list narrow. "input" is deliberately absent: the idle message reads
+      # "waiting for your input", so matching on it would send the LED back to the fast
+      # blink on every idle notification — the bug this whole branch exists to avoid.
+      message="$(printf '%s' "$payload" \
+        | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -1)"
+      case "$message" in
+        *permission*|*Permission*|*approve*|*Approve*|*allow*|*Allow*)
+          want="waiting" ;;
+        *)
+          want="done" ;;
+      esac
+      ;;
+    *)
+      # A notification type this build doesn't know about (auth_success, or something a
+      # future version adds). Leave the LED exactly as it is — guessing here means
+      # publishing a wrong state, and every wrong guess above the current state shows up
+      # as a light that lies about what the agent is doing.
+      exit 0
+      ;;
   esac
 fi
+
 [ -n "$session_id" ] || session_id="pid-$PPID"
 # normalise, in case the id carries anything odd
 session_id="$(printf '%s' "$session_id" | tr -c 'A-Za-z0-9._-' '_')"
@@ -236,7 +278,7 @@ else
   echo "$want" > "$SESS_DIR/$session_id"
 fi
 
-# drop sessions that have gone silent (Claude killed / crashed, so no SessionEnd arrived)
+# drop sessions that have gone silent (WorkBuddy killed / crashed, so no SessionEnd arrived)
 find "$SESS_DIR" -maxdepth 1 -type f -mmin "+$SESSION_TTL_MINUTES" -delete 2>/dev/null
 
 # effective state = highest priority across all live sessions

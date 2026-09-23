@@ -1,6 +1,9 @@
 BIN := bin/capsled
 SRC := src/capsled.swift
-CLAUDE_BIN := $(HOME)/.claude/bin
+
+# WorkBuddy keeps its config under ~/.workbuddy, relocatable via WORKBUDDY_CONFIG_DIR.
+WORKBUDDY_DIR := $(if $(WORKBUDDY_CONFIG_DIR),$(WORKBUDDY_CONFIG_DIR),$(HOME)/.workbuddy)
+WORKBUDDY_BIN := $(WORKBUDDY_DIR)/bin
 
 .PHONY: all build install uninstall probe test clean disable enable status
 
@@ -19,8 +22,8 @@ install:
 uninstall:
 	-bin/caps-indicator reset
 	python3 uninstall-hooks.py
-	rm -f $(CLAUDE_BIN)/capsled $(CLAUDE_BIN)/caps-indicator
-	rm -rf $(HOME)/.claude/capsled
+	rm -f $(WORKBUDDY_BIN)/capsled $(WORKBUDDY_BIN)/caps-indicator
+	rm -rf $(WORKBUDDY_DIR)/capsled
 
 probe: build
 	$(BIN) probe
