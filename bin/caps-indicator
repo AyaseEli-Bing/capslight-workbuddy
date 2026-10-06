@@ -184,16 +184,16 @@ fi
 
 # --- read the hook payload ---------------------------------------------------
 
-# Read stdin line by line with a timeout. Claude Code writes the hook JSON and closes the
-# pipe, so this finishes immediately in practice — but when the script inherits a pipe
-# nobody ever closes (a wrapper script, cron, launchd), a plain `cat` would hang forever.
-# `read -t` takes whole seconds only on the bash 3.2 that ships with macOS.
+# Read stdin with a timeout. Claude Code writes the hook JSON and closes the pipe, so this
+# finishes immediately in practice — but when the script inherits a pipe nobody ever closes
+# (a wrapper script, cron, launchd), a plain `cat` would hang forever.
+# `-d ''` reads to NUL, i.e. the payload in one call: bash 3.2 on macOS fills the variable but
+# returns non-zero when the last line has no trailing newline, which makes a `while read` loop
+# discard the whole payload.
 payload=""
 session_id=""
 if [ ! -t 0 ]; then
-  while IFS= read -r -t 1 line; do
-    payload="$payload$line"
-  done
+  IFS= read -r -t 1 -d '' payload || true
   session_id="$(printf '%s' "$payload" \
     | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     | head -1)"
