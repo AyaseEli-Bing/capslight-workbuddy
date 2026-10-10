@@ -17,6 +17,53 @@ enum Backend: String {
     case modifier
 }
 
+enum KeyboardScope: String {
+    case all
+    case `internal`
+    case external
+}
+
+let keyboardScope = KeyboardScope(rawValue: ProcessInfo.processInfo.environment["CAPS_KEYBOARD"] ?? "all") ?? .all
+
+func property(_ device: IOHIDDevice, _ key: String) -> String {
+    IOHIDDeviceGetProperty(device, key as CFString) as? String ?? "?"
+}
+
+func isInternalKeyboard(_ device: IOHIDDevice) -> Bool {
+    guard let transport = IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String else {
+        return false
+    }
+    return transport.caseInsensitiveCompare("FIFO") == .orderedSame
+}
+
+func inScope(_ device: IOHIDDevice) -> Bool {
+    switch keyboardScope {
+    case .all:
+        return true
+    case .internal:
+        return isInternalKeyboard(device)
+    case .external:
+        return !isInternalKeyboard(device)
+    }
+}
+
+func ledElementCount(_ device: IOHIDDevice) -> Int {
+    let ledMatching: [String: Any] = [
+        kIOHIDElementUsagePageKey: kHIDPage_LEDs,
+        kIOHIDElementUsageKey: kHIDUsage_LED_CapsLock,
+    ]
+    guard let elements = IOHIDDeviceCopyMatchingElements(
+        device, ledMatching as CFDictionary, IOOptionBits(kIOHIDOptionsTypeNone)
+    ) as? [IOHIDElement] else {
+        return 0
+    }
+    return elements.count
+}
+
+func describe(_ device: IOHIDDevice) -> String {
+    "transport=\(property(device, kIOHIDTransportKey)) product=\(property(device, kIOHIDProductKey))"
+}
+
 // MARK: - Backend 1: direct write to the HID LED element
 
 func setLEDViaHID(_ on: Bool) -> Bool {
@@ -38,7 +85,7 @@ func setLEDViaHID(_ on: Bool) -> Bool {
     ]
 
     var anySucceeded = false
-    for device in devices {
+    for device in devices where inScope(device) {
         guard let elements = IOHIDDeviceCopyMatchingElements(
             device, ledMatching as CFDictionary, IOOptionBits(kIOHIDOptionsTypeNone)
         ) as? [IOHIDElement] else { continue }
@@ -151,9 +198,13 @@ func usage() -> Never {
       capsled pulse [times] [interval] flash N times, then exit
       capsled state                   print the Caps Lock modifier state
       capsled probe                   report which backends work on this machine
+      capsled list                    show keyboards and which ones the current scope drives
 
     Flags:
       --backend hid|modifier          force a backend (default: hid, falling back to modifier)
+
+    Environment:
+      CAPS_KEYBOARD=all|internal|external   limit which keyboards light up (default: all)
     """
     print(text)
     exit(1)
@@ -212,6 +263,24 @@ case "state":
         print("unknown")
         exit(1)
     }
+
+case "list":
+    let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+    let matching: [String: Any] = [
+        kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
+        kIOHIDDeviceUsageKey: kHIDUsage_GD_Keyboard,
+    ]
+    IOHIDManagerSetDeviceMatching(manager, matching as CFDictionary)
+    guard IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess,
+          let devices = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice>
+    else {
+        FileHandle.standardError.write(Data("capsled: no keyboards\n".utf8))
+        exit(1)
+    }
+    for device in devices.sorted(by: { describe($0) < describe($1) }) {
+        print("\(inScope(device) ? "use " : "skip") \(describe(device)) capsLockLEDs=\(ledElementCount(device))")
+    }
+    IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
 
 case "probe":
     let hidOK = setLEDViaHID(true)

@@ -98,6 +98,37 @@ rm ~/.claude/capsled/debug             # stop (the log file stays until you dele
 
 `CAPSLIGHT_DEBUG=1` does the same for a single run.
 
+## Choosing which keyboard lights up
+
+By default every HID keyboard on the machine is driven, external ones included. Limit that with a
+persisted switch — it survives restarts and applies to all sessions at once:
+
+```sh
+caps-indicator scope internal   # only the built-in keyboard
+caps-indicator scope external   # only external keyboards
+caps-indicator scope all        # every keyboard (default)
+caps-indicator status           # show the current scope
+```
+
+To override for one run instead, set `CAPS_KEYBOARD=internal|external|all` in the environment
+Claude Code is launched from.
+
+A keyboard counts as built-in when its IOKit `Transport` is `FIFO`, which is how Apple Silicon
+reports the internal keyboard/trackpad; anything else (USB, Bluetooth) counts as external. Check
+what your machine has, and whether a device can be lit at all:
+
+```sh
+bin/capsled list
+use  transport=FIFO product=Apple Internal Keyboard / Trackpad capsLockLEDs=1
+use  transport=USB product=USB Receiver capsLockLEDs=1
+use  transport=USB product=G502 HERO Gaming Mouse capsLockLEDs=0
+use  transport=Virtual product=TouchBarUserDevice capsLockLEDs=0
+```
+
+`capsLockLEDs=0` means the device exposes no Caps Lock LED element, so writes to it change
+nothing. Scope applies only to the `hid` backend: the `modifier` fallback goes through
+`IOHIDSystem` and cannot target one device.
+
 ## Tuning the blink
 
 Via environment variables (you can set these in `~/.claude/settings.json` under `env`):
@@ -171,7 +202,8 @@ Nothing runs as root, nothing is downloaded, nothing phones home.
   on every hook, so neither fires in normal use. To clear it immediately, run
   `bin/caps-indicator reset`. Both are tunable via `CAPS_BLINK_MAX_SECONDS` and
   `CAPS_SESSION_TTL_MINUTES`.
-- External keyboards are driven too — the command goes to every HID keyboard at once.
+- External keyboards are driven too — the command goes to every HID keyboard at once, unless a
+  scope is set (see [Choosing which keyboard lights up](#choosing-which-keyboard-lights-up)).
 
 ## Author
 
